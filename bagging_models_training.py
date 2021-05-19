@@ -1,115 +1,137 @@
-import  tensorflow as tf
-from    tensorflow.keras import datasets, layers, optimizers, Sequential, metrics
-from 	tensorflow import keras
-from    tensorflow.keras import regularizers
-import 	os
-import 	pointnet
-import 	data_prepare
-import 	time
-import  evaluate
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+from torch.utils.data import DataLoader, TensorDataset, Dataset
+import os
+import argparse
+import data_prepare
+from pointnet import *
+# from pointnet2_cls_msg import *
+import tqdm
+import data_handler
 
+class my_dataset(Dataset):
+    def __init__(self, dataset_path):
+        super(my_dataset, self).__init__()
+        self.x, self.y = data_prepare.get_dataset(dataset_path)
+        self.leng = len(self.y)
 
-def printinfo(pred, y):
-    evaluator = evaluate.evaluate()
-    evaluator.roc_curve(pred, y)
-    evaluator.pr_curve(pred, y)
-    evaluator.evaluate(pred, y, 0.5)
-    print('fp = {}'.format(evaluator.fp))
-    print('tp = {}'.format(evaluator.tp))
-    print('fn = {}'.format(evaluator.fn))
-    print('tn = {}'.format(evaluator.tn))
-    print('precision = {}'.format(evaluator.precision))
-    print('recall = {}'.format(evaluator.recall))
-    print('mcc = {}'.format(evaluator.mcc))
-    print('acc = {}'.format(evaluator.acc))
-    print('f1 = {}'.format(evaluator.f_score(1)))
+    def __getitem__(self, index):
+        return {'site_coord': self.x['site_coord'][index], 'site_name': self.x['site_name'][index]}, self.y[index]
+
+    def __len__(self):
+        return self.leng
 
 
 def dataset(dataset_path):
-    x, y = data_prepare.get_dataset(dataset_path)
-    dataset = tf.data.Dataset.from_tensor_slices((x, y))
-    dataset = dataset.shuffle(10000).batch(32)
-    return dataset
+    dataset = my_dataset(dataset_path)
+    datas = DataLoader(dataset=dataset, batch_size=32, shuffle=True, num_workers=2, pin_memory=True)
+    return datas
 
 
-# 训练参数设置
-def training_parameter(model_name):
-    TensorBoardcallback = keras.callbacks.TensorBoard(
-        log_dir=r'logs\{}'.format(model_name),
-        histogram_freq=1, batch_size=32,
-        write_graph=True, write_grads=True, write_images=True,
-        embeddings_freq=0, embeddings_layer_names=None,
-        embeddings_metadata=None, embeddings_data=None, update_freq='epoch'
-    )
+def train(net, opt, scheduler, train_loader, dev):
+    net.train()
+    total_loss = 0
+    num_batches = 0
+    total_correct = 0
+    count = 0
+    with tqdm.tqdm(train_loader, ascii=True) as tq:
+        for data, label in tq:
+            # label = label[:, 0]
+            num_examples = label.shape[0]
+            data['site_coord'] = data['site_coord'].to(dev)
+            data['site_name'] = data['site_name'].to(dev)
+            label = label.to(dev)
+            opt.zero_grad()
+            logits = net(data)
+            # loss = nn.CrossEntropyLoss(logits, label)
+            Loss = nn.BCELoss()
+            logits = logits.squeeze(dim=1)
+            loss = Loss(logits, label)
+            loss.backward()
+            opt.step()
+            # printinfo(logits, label.int())
+            # break
+            preds = torch.round(logits).float()
+            # _, preds = logits.max(1)
+            num_batches += 1
+            count += num_examples
+            loss = loss.item()
+            correct = (preds == label).sum().item()
+            total_loss += loss
+            total_correct += correct
+            tq.set_postfix({
+                'AvgLoss': '%.5f' % (total_loss / num_batches),
+                'AvgAcc': '%.5f' % (total_correct / count)})
 
-    ModelCheckpoint = tf.keras.callbacks.ModelCheckpoint(
-        filepath=r'model\\' + model_name + '.h5',
-        monitor='val_accuracy',
-        verbose=0,
-        save_best_only=True,
-        save_weights_only=True,
-        mode='max',
-        period=1
-    )
-    return TensorBoardcallback, ModelCheckpoint
+    scheduler.step()
 
-
-# 预训练
-def pretraining(model_id, training_dataset, test_dataset, valid_dataset):
-    # 坐标预训练模型
-    TensorBoardcallback, ModelCheckpoint = training_parameter('pretrain_coord_{}'.format(model_id))
-    pretraining_coord_model = pointnet.Pointnet_pretraining_coord()
-    pretraining_coord_model.compile(
-        optimizer=optimizers.Adam(lr=0.00001),
-        loss=tf.losses.BinaryCrossentropy(),
-        metrics=['accuracy']
-    )
-    pretraining_coord_model.fit(training_dataset, epochs=1000, validation_data=valid_dataset, callbacks=[TensorBoardcallback, ModelCheckpoint])
-    # 氨基酸种类预训练模型
-    TensorBoardcallback, ModelCheckpoint = training_parameter('pretrain_name_{}'.format(model_id))
-    pretraining_name_model = pointnet.Pointnet_pretraining_name()
-    pretraining_name_model.compile(
-        optimizer=optimizers.Adam(lr=0.00001),
-        loss=tf.losses.BinaryCrossentropy(),
-        metrics=['accuracy']
-    )
-    pretraining_name_model.fit(training_dataset, epochs=1000, validation_data=valid_dataset, callbacks=[TensorBoardcallback, ModelCheckpoint])
-
-
-# 训练模型
-def training(model_id, training_dataset, test_dataset, valid_dataset):
-    # 正式训练模型
-    TensorBoardcallback, ModelCheckpoint = training_parameter('bagging_model_{}'.format(model_id))
-    bagging_model = pointnet.Pointnet()
-    bagging_model.compile(
-        optimizer=optimizers.Adam(lr=0.0001),
-        loss=tf.losses.BinaryCrossentropy(),
-        metrics=['accuracy']
-    )
-    # 初始化输入
-    pointcloud1 = tf.fill([32, 25, 3], 0)
-    pointcloud1 = tf.cast(pointcloud1, dtype=tf.float32)
-    pointcloud2 = tf.fill([32, 25, 20], 0)
-    pointcloud2 = tf.cast(pointcloud2, dtype=tf.float32)
-    input = {
-        'site_coord': pointcloud1,
-        'site_name': pointcloud2
-    }
-    bagging_model(input)
-    # bagging_model.fit(training_dataset, epochs=0, validation_data=valid_dataset, callbacks=[TensorBoardcallback, ModelCheckpoint])
-    bagging_model.summary()
-
-    bagging_model.load_weights(r'model\pretrain_coord_{}.h5'.format(model_id), by_name=True)
-    bagging_model.load_weights(r'model\pretrain_name_{}.h5'.format(model_id), by_name=True)
-    bagging_model.fit(training_dataset, epochs=1000, validation_data=valid_dataset, callbacks=[TensorBoardcallback, ModelCheckpoint])
-
+def evaluate(net, test_loader, file_path, dev):
+    net.eval()
+    total_label = []
+    total_pred = []
+    total_correct = 0
+    count = 0
+    # f1 = open('pred.txt', 'a+')
+    # f2 = open('label.txt','a+')
+    with torch.no_grad():
+        with tqdm.tqdm(test_loader, ascii=True) as tq:
+            for data, label in tq:
+                # label = label[:,0]
+                num_examples = label.shape[0]
+                data['site_coord'] = data['site_coord'].to(dev)
+                data['site_name'] = data['site_name'].to(dev)
+                label = label.to(dev)
+                logits = net(data)
+                logits = logits.squeeze(dim=1)
+                # _, preds = logits.max(1)
+                preds = logits.ge(0.7).float()
+                # preds = torch.round(logits).float()
+                correct = (preds == label).sum().item()
+                total_correct += correct
+                count += num_examples
+                pred_list = preds.cpu().numpy().tolist()
+                lable_list = label.cpu().numpy().tolist()
+                for i in pred_list:
+                    total_pred.append(int(i))
+                for i in lable_list:
+                    total_label.append(int(i))
+                # for i in pred_list:
+                #     f1.write(str(int(i)) + '\n')
+                # for i in lable_list:
+                #     f2.write(str(int(i)) + '\n')
+                tq.set_postfix({
+                    'AvgAcc': '%.5f' % (total_correct / count)})
+    pre = data_handler.judge(total_label, total_pred, file_path)
+    # f1.close()
+    # f2.close()
+    return pre
 
 if __name__ == '__main__':
-    test_dataset = dataset(r'dataset\test_set.pickle')
-    valid_dataset = dataset(r'dataset\valid_set.pickle')
-    print('start')
-    for i in range(30):
-        training_dataset = dataset(r'dataset\bagging_set{}.pickle'.format(i))
-        pretraining(i, training_dataset, test_dataset, valid_dataset)
-        break
-        training(i, training_dataset, test_dataset, valid_dataset)
+    device_list = [0, 1, 2, 3]
+    torch.cuda.set_device(7)
+    cuda = torch.cuda.is_available()
+    device = torch.device('cuda' if cuda else 'cpu')
+    for no in range(28, 29):
+        training_dataset = dataset(r'./dataset/bagging_set{}.pickle'.format(no))
+        # training_dataset = dataset(r'./dataset/valid_set.pickle')
+        net = Pointnet()
+        net = net.to(device)
+        opt = optim.Adam(net.parameters(), lr=0.0001, weight_decay=1e-5)
+        scheduler = optim.lr_scheduler.StepLR(opt, step_size=15, gamma=0.7)
+        test_dataset = dataset(r'./dataset/test_set.pickle')
+        best_test_pre = 0
+        # net.load_state_dict(torch.load('epoch_9_0.04905059530882388.pth'), strict=True)
+        # opt.load_state_dict(torch.load('optimizer.pt'))
+        for epoch in range(10):
+            train(net, opt, scheduler, training_dataset, device)
+            if (epoch + 1) % 5 == 0:
+                print('Epoch #%d Testing' % epoch)
+                test_pre = evaluate(net, test_dataset, './result/no_' + str(no) + 'epoch_' + str(epoch) + '.txt', device)
+                # if test_pre > best_test_pre:
+                torch.save(net.state_dict(), f"{no}epoch_{epoch}_{test_pre}.pth")
+                best_test_pre = test_pre
+                # torch.save(opt, f'optimizer.pt')
+                print('Current test pre: %.5f (best: %.5f)' % (test_pre, best_test_pre))
+        # torch.save(net.state_dict(), f"add_model_{no}.pth")

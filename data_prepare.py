@@ -1,8 +1,8 @@
 import pickle
 import os
-import tensorflow as tf
 import PDB.DataProcess.data_prepare
-
+import torch.nn.functional as F
+import torch
 
 
 def _data_to_site(data_list):
@@ -18,10 +18,11 @@ def _data_to_site(data_list):
         site_coord_list.append(res_coord_list)
         site_name_list.append(res_name_list)
         label_list.append(site[1])
-    site_name_list = tf.one_hot(site_name_list, depth=20)
-
+    site_name_list = torch.tensor(site_name_list)
+    site_name_list = F.one_hot(site_name_list, 20).float()
+    site_coord_list = torch.tensor(site_coord_list).float()
+    label_list = torch.tensor(label_list).float()
     return (site_coord_list, site_name_list), label_list
-
 
 def pickle_to_input(path):
     # data_list = PDB.DataProcess.data_prepare.get_dataset(path)
@@ -35,12 +36,9 @@ def pickle_to_input(path):
     }
     return input, label_list
 
-
 def get_dataset(path):
     x, y = pickle_to_input(path)
     return x, y
-
-
 
 def get_filelist(dir, Filelist):
     """get the file list under the direction"""
@@ -54,34 +52,6 @@ def get_filelist(dir, Filelist):
             newDir = os.path.join(dir, s)
             get_filelist(newDir, Filelist)
     return Filelist
-
-# def get_site_pickle():
-#     file_list = []
-#     file_list = get_filelist(r'H:\biodata\pdbtm\dataset_3582442', file_list)
-#     for file in file_list:
-#         filepath, filename = os.path.split(file)
-#         new_path = r'H:\biodata\pdbtm\site2\{}'.format(filename)
-#         print(new_path)
-#         data_list = PDB.DataProcess.data_prepare.get_dataset(file)
-#         (site_coord_list, site_name_list), label_list = _data_to_site(data_list)
-#         f = open(new_path, 'wb')
-#         pickle.dump(((site_coord_list, site_name_list), label_list), f)
-#         f.close()
-
-# def get_site_pickle():
-#     file_list = []
-#     file_list = get_filelist(r'H:\biodata\pdbtm\dataset_3582442', file_list)
-#     for file in file_list:
-#         filepath, filename = os.path.split(file)
-#         new_path = r'H:\biodata\pdbtm\site2\{}'.format(filename)
-#         print(new_path)
-#         data_list = PDB.DataProcess.data_prepare.get_dataset(file)
-#         f = open(new_path, 'wb')
-#         pickle.dump(data_list, f)
-#         f.close()
-
-
-
 
 if __name__ == '__main__':
     # training_x, training_y, valid_x, valid_y, test_x, test_y = training_dataset()

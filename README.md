@@ -14,9 +14,19 @@ Y. Bao, W. Wang, M. Dong, F. He and H. Wang, "Discover the Binding Domain of Tra
 
 <p align="center"><img width="100%" src="images/pipeline.png" /></p>
 
+The MCC of this model can reach 0.36
+
+## Run
+
+```shell
+python bagging_models_training.py
+```
+
 ## Datasets
 
-The size of the entire dataset is greater than 30G, if you are interest in this work, please contact baoyh078@nenu.edu.cn
+The size of the entire dataset is greater than 30G. If you are interest in this work, please contact baoyh078@nenu.edu.cn
+
+Default dataset path is ./dataset
 
 ## Requirements
 
@@ -27,5 +37,7 @@ The size of the entire dataset is greater than 30G, if you are interest in this 
 
 ## Sniffer Part
 
-we have developed the sniffer part, code will be released after the paper have been published
+We have developed the sniffer part, code will be released after the paper is published
+
+The model in sniffer part is much better. Its MCC can reach 0.50 with high speed.
 
